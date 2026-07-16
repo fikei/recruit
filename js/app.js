@@ -1,7 +1,7 @@
 /* Agape recruiting viewer — static, zero-backend.
    Data ships AES-GCM-encrypted in data/applicants.enc.json; the house
    passphrase derives the key (PBKDF2). Decisions live in localStorage. */
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 console.log(`[recruit] v${VERSION} - Agape recruiting viewer`);
 
 const LS_DECISIONS = 'agape:decisions';
@@ -55,9 +55,158 @@ const monthLabel = iso => new Date(iso + (iso.length === 7 ? '-01T12:00' : '')).
 
 function subLine(a) {
   const bits = [trackLabel(a)];
-  if (a.movein) bits.push(a.movein);
-  if (a.budget) bits.push(a.budget);
+  const mi = normalizeMoveIn(a);
+  const bu = normalizeBudget(a.budget);
+  if (mi) bits.push(mi);
+  if (bu) bits.push(bu);
   return bits.join(' · ');
+}
+
+/* ---------- normalizers (raw text stays behind the (i) tooltip) ---------- */
+const MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function normalizeMoveIn(a) {
+  const raw = (a.movein || '').trim();
+  if (!raw || /^n\/?a$/i.test(raw)) return '';
+  const flexible = /flexib|anytime|any time|whenever|open to|open for/i.test(raw);
+  if (/asap|as soon as/i.test(raw)) return 'ASAP' + (flexible ? ' · flexible' : '');
+
+  // months mentioned, in text order (dedup, cap at a range of two)
+  const found = [];
+  const rx = new RegExp(`\\b(${MONTHS.join('|')}|${MONTH_ABBR.join('|')})\\b`, 'gi');
+  let m;
+  while ((m = rx.exec(raw))) {
+    let idx = MONTHS.findIndex(x => x.startsWith(m[1].slice(0, 3).toLowerCase()));
+    if (idx >= 0 && !found.includes(idx)) found.push(idx);
+  }
+  if (!found.length) return flexible ? 'Flexible' : '';
+
+  // a day-of-month next to the first month ("August 1st", "14th July")
+  const first = found[0];
+  const monthName = `(?:${MONTHS[first]}|${MONTH_ABBR[first]})`;
+  const day = raw.match(new RegExp(`${monthName}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'i'))
+    || raw.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?${monthName}`, 'i'));
+
+  // year: explicit, else inferred from application date
+  const yearMatch = raw.match(/\b(20\d{2})\b/);
+  const applied = new Date(a.ts_iso);
+  const year = yearMatch ? +yearMatch[1] : (first < applied.getMonth() ? applied.getFullYear() + 1 : applied.getFullYear());
+
+  let label;
+  if (found.length > 1) {
+    const lo = Math.min(...found), hi = Math.max(...found);
+    label = `${MONTH_ABBR[lo]}–${MONTH_ABBR[hi]} ${year}`;
+  } else if (day) {
+    label = `${MONTH_ABBR[first]} ${+day[1]}, ${year}`;
+  } else {
+    label = `${MONTH_ABBR[first]} ${year}`;
+  }
+  return label + (flexible ? ' · flexible' : '');
+}
+
+function normalizeBudget(raw) {
+  raw = (raw || '').trim();
+  if (!raw || /^n\/?a$/i.test(raw)) return '';
+  // pull dollar-ish numbers: $1,800 · 2000 · 1.2K · 4K/mo
+  const nums = [];
+  const rx = /\$?\s?(\d{1,2}(?:[.,]\d{1,3})?)\s*[kK]\b|\$?\s?(\d{1,3}(?:,\d{3})+|\d{3,4})(?!\d)/g;
+  let m;
+  while ((m = rx.exec(raw))) {
+    let n = m[1] ? parseFloat(m[1].replace(',', '.')) * 1000 : parseInt(m[2].replace(/,/g, ''), 10);
+    if (n >= 300 && n <= 10000) nums.push(Math.round(n));
+  }
+  if (!nums.length) return /flexib/i.test(raw) ? 'Flexible' : '';
+  const fmt = n => '$' + n.toLocaleString('en-US');
+  const lo = Math.min(...nums), hi = Math.max(...nums);
+  const capped = /up to|max|below|under|less than|<|limit|upper bound|no more than/i.test(raw);
+  const plus = /\d\s*\+/.test(raw);
+  let label;
+  if (lo !== hi) label = `${fmt(lo)}–${fmt(hi)}`;
+  else if (capped) label = `Up to ${fmt(hi)}`;
+  else if (plus) label = `${fmt(hi)}+`;
+  else label = fmt(hi);
+  return label + '/mo';
+}
+
+/* An (i) dot whose hover/focus reveals the original response text. */
+function infoDot(raw, normalized) {
+  if (!raw || !normalized || raw.trim() === normalized) return '';
+  return `<button class="info-dot" type="button" data-tip="${esc(raw)}" aria-label="Original response">i</button>`;
+}
+
+/* ---------- links helper ---------- */
+/* Collects links from the socials field and any URLs embedded in the long
+   answers; resolves bare handles (@fikei, "IG: name") to clickable profiles. */
+const HANDLE_STOPWORDS = /^(https?|www|and|but|not|the|don|dont|use|media|active|com|net|org|only|though|really)$/i;
+const LINK_LABELS = [
+  [/instagram\.com/i, 'Instagram'], [/linkedin\.com/i, 'LinkedIn'],
+  [/facebook\.com/i, 'Facebook'], [/(?:^|\.)x\.com|twitter\.com/i, 'X'],
+  [/github\.com/i, 'GitHub'], [/tiktok\.com/i, 'TikTok'],
+  [/substack\.com/i, 'Substack'], [/youtube\.com|youtu\.be/i, 'YouTube'],
+  [/soundcloud\.com/i, 'SoundCloud'], [/spotify\.com/i, 'Spotify'],
+];
+
+function linkLabel(url) {
+  try {
+    const u = new URL(url);
+    for (const [rx, name] of LINK_LABELS) {
+      if (rx.test(u.hostname + u.pathname)) {
+        let seg = u.pathname.split('/').filter(Boolean).pop() || '';
+        // subdomain platforms (akevinyang.substack.com) carry the handle up front
+        if (!seg && /substack\.com$/i.test(u.hostname) && !/^www\./i.test(u.hostname)) seg = u.hostname.split('.')[0];
+        const handle = decodeURIComponent(seg).replace(/^@/, '').replace(/\/$/, '');
+        return handle && !/^(in|company|profile|people)$/i.test(handle) ? `${name} · ${handle}` : name;
+      }
+    }
+    return u.hostname.replace(/^www\./, '') + (u.pathname !== '/' ? u.pathname.replace(/\/$/, '') : '');
+  } catch { return url; }
+}
+
+function collectLinks(a) {
+  const found = new Map(); // normalized url -> {url, label}
+  const add = url => {
+    if (!url) return;
+    url = url.replace(/[.,;:!?)\]]+$/, '');
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    const key = url.toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+    if (!found.has(key)) found.set(key, { url, label: linkLabel(url) });
+  };
+
+  const social = a.social || '';
+  const answers = [a.about, a.why, a.gifts].join('  ');
+  const all = social + '  ' + answers;
+
+  // 1. full URLs anywhere
+  for (const m of all.matchAll(/https?:\/\/[^\s,<>()"']+/gi)) add(m[0]);
+  // 2. bare domains anywhere (skip emails)
+  for (const m of all.matchAll(/(?<![@\w.])((?:[a-z0-9-]+\.)+(?:com|org|net|io|co|ai|me|dev|house|fm|xyz))(\/[^\s,<>()"']*)?/gi)) {
+    if (/@/.test(m[0])) continue;
+    add(m[1] + (m[2] || ''));
+  }
+  // 3. handles — socials field only, resolved by platform hints in context
+  const handleRx = /(?:(insta(?:gram)?|ig|tiktok|twitter|\bx\b|fb|facebook|linkedin)\b[:\s@]*)?@?([a-z0-9._]{3,30})(?:\s*\(?\s*(insta(?:gram)?|ig|tiktok|fb|facebook)\)?)?/gi;
+  if (social && !/^(i don'?t|none|n\/?a|right now)/i.test(social.trim())) {
+    for (const m of social.matchAll(/(?:^|[\s,])(?:(insta(?:gram)?|ig|tiktok|fb|facebook|linkedin|twitter|x)\b[:\s]*)?@([a-z0-9._]{2,30})\b(?:\s*(?:on\s+)?\(?(insta(?:gram)?|ig|tiktok|fb|facebook)\)?)?/gi)) {
+      const hint = (m[1] || m[3] || 'instagram').toLowerCase();
+      const handle = m[2];
+      if (HANDLE_STOPWORDS.test(handle)) continue;
+      const host = /tiktok/.test(hint) ? `tiktok.com/@${handle}`
+        : /fb|facebook/.test(hint) ? `facebook.com/${handle}`
+        : /linkedin/.test(hint) ? `linkedin.com/in/${handle}`
+        : /twitter|^x$/.test(hint) ? `x.com/${handle}`
+        : `instagram.com/${handle}`;
+      add(host);
+    }
+    // "IG: rajufromdublin" / "harpershabitat on ig" — platform + bare word, no @
+    for (const m of social.matchAll(/(?:(insta(?:gram)?|ig|fb|facebook)\b[:\s]+([a-z0-9._]{3,30})\b|\b([a-z0-9._]{3,30})\s+on\s+(insta(?:gram)?|ig|fb|facebook)\b)/gi)) {
+      const hint = (m[1] || m[4] || '').toLowerCase();
+      const handle = m[2] || m[3];
+      if (!handle || HANDLE_STOPWORDS.test(handle)) continue;
+      add(/fb|facebook/.test(hint) ? `facebook.com/${handle}` : `instagram.com/${handle}`);
+    }
+  }
+  return [...found.values()];
 }
 
 function decisionChip(id) {
@@ -191,10 +340,13 @@ function renderReview() {
   document.getElementById('review-next').disabled = qIndex === queue.length - 1;
 
   const rec = decisions[a.id];
-  const socials = (a.social || '').split(/[\s,]+/).filter(s => /^https?:\/\//.test(s));
-  const socialHtml = socials.length
-    ? socials.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))}</a>`).join(' · ')
-    : (a.social ? esc(a.social) : '');
+  const links = collectLinks(a);
+  const linksHtml = links.length
+    ? `<div class="link-chips">${links.map(l =>
+        `<a class="link-chip" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}${a.social ? infoDot(a.social, 'links') : ''}</div>`
+    : (a.social ? `<span class="review__fact-value">${esc(a.social)}</span>` : '');
+  const miNorm = normalizeMoveIn(a);
+  const buNorm = normalizeBudget(a.budget);
 
   document.getElementById('review-body').innerHTML = `
     ${rec ? `<p class="review__decided">Decided: ${DECISION_LABELS[rec.d]}${rec.reason ? ` — ${esc(HOLD_REASONS.find(r => r.id === rec.reason)?.label || rec.reason)}` : ''} · <button class="link-clear" data-clear="${a.id}">Undo</button></p>` : ''}
@@ -209,10 +361,10 @@ function renderReview() {
             ${a.source ? `<span class="review__badge" title="How they heard about Agape">${esc(a.source)}</span>` : ''}
           </div>
           <div class="review__facts">
-            <div class="review__fact"><span class="review__fact-label">Move-in</span><span class="review__fact-value">${esc(a.movein || '—')}</span></div>
-            <div class="review__fact"><span class="review__fact-label">Budget</span><span class="review__fact-value">${esc(a.budget || '—')}</span></div>
+            <div class="review__fact"><span class="review__fact-label">Move-in</span><span class="review__fact-value">${esc(miNorm || a.movein || '—')} ${infoDot(a.movein, miNorm)}</span></div>
+            <div class="review__fact"><span class="review__fact-label">Budget</span><span class="review__fact-value">${esc(buNorm || a.budget || '—')} ${infoDot(a.budget, buNorm)}</span></div>
             <div class="review__fact"><span class="review__fact-label">Applied</span><span class="review__fact-value">${new Date(a.ts_iso).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</span></div>
-            ${socialHtml ? `<div class="review__fact"><span class="review__fact-label">Links</span><span class="review__fact-value">${socialHtml}</span></div>` : ''}
+            ${linksHtml ? `<div class="review__fact"><span class="review__fact-label">Links</span>${linksHtml}</div>` : ''}
           </div>
         </div>
       </div>

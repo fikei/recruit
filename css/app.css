@@ -279,10 +279,15 @@ button { font: inherit; cursor: pointer; }
   font-size: 18px; line-height: 1; display: inline-grid; place-items: center;
 }
 .review__nav:disabled { opacity: .35; cursor: default; }
+/* Scroll container spans the full window so the scrollbar sits at the far
+   right edge (browser standard); the reading column is capped inside. */
 .review__scroll {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: 0 var(--space-4) var(--space-6);
+  width: 100%;
+}
+.review__inner {
   max-width: 720px; width: 100%; margin: 0 auto;
+  padding: 0 var(--space-4) var(--space-6);
 }
 .review__card {
   background: var(--bg-elevated); border: 1px solid var(--border);
@@ -310,6 +315,42 @@ button { font: inherit; cursor: pointer; }
 .review__fact { display: flex; gap: var(--space-2); }
 .review__fact-label { color: var(--fg-subtle); font-size: var(--font-size-small); min-width: 88px; padding-top: 1px; }
 .review__fact-value { color: var(--fg); overflow-wrap: anywhere; min-width: 0; }
+/* Link chips — resolved socials + links mined from answers. */
+.link-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }
+.link-chip {
+  display: inline-flex; align-items: center;
+  height: 28px; padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface); color: var(--fg);
+  font-size: var(--font-size-small); font-weight: var(--fw-medium);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.link-chip:hover { background: var(--bg-overlay); text-decoration: none; }
+
+/* (i) dot — hover/focus reveals the applicant's original response text. */
+.info-dot {
+  display: inline-grid; place-items: center;
+  width: 16px; height: 16px; padding: 0;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+  background: transparent; color: var(--fg-subtle);
+  font-size: 10px; font-style: italic; font-weight: var(--fw-semibold);
+  font-family: var(--font-body);
+  vertical-align: 2px; position: relative; cursor: help;
+}
+.info-dot::after {
+  content: attr(data-tip);
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: min(340px, 80vw);
+  background: var(--fg); color: var(--bg);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-md);
+  font-size: var(--font-size-caption); font-style: normal; font-weight: 400;
+  line-height: var(--lh-tight); text-align: left; white-space: normal;
+  opacity: 0; visibility: hidden; transition: opacity 120ms ease;
+  pointer-events: none; z-index: 90;
+}
+.info-dot:hover::after, .info-dot:focus-visible::after { opacity: 1; visibility: visible; }
+
 .review__section { margin-bottom: var(--space-5); }
 .review__section-title { margin: 0 0 var(--space-3); font-weight: var(--fw-semibold); font-size: var(--font-size-title-4); }
 .review__prose { margin: 0; font-size: var(--font-size-body); line-height: var(--lh-body); white-space: pre-wrap; overflow-wrap: anywhere; }
